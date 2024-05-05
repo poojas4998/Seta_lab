@@ -1,0 +1,112 @@
+# python - a snakemake file
+
+import os
+import glob
+
+
+rule all:
+	input:
+	    expand(
+            "{genotype}_{condition}_{sample}_pass1/Aligned.out.sorted.bam",
+            genotype=["KO", "WT"],
+            condition=["control", "treatment"],
+            sample=["001", "002", "003", "004", "005"]
+        ) 
+		 #expand(
+		 #	"{genotype}_{condition}_{sample}_01_trimmedreads.gz",
+		 #	  genotype = ["KO","WT"],
+		  #    condition = ["control","treatment"],
+		#	  sample = ["001","002","003","004","005"]
+			  )
+			  
+			# expand("{genotype}_{condition}_{sample}_{readpair}_fastqc.zip", genotype = ["KO","WT"], condition = ["control","treatment"] ,sample = ["001","002","003","004","005"], readpair = ["01","02"]),
+
+		# "m32_STAR/"
+	
+	
+
+rule rawFASTQC:
+	input:
+		rawreads = "{genotype}_{condition}_{sample}_{readpair}.gz"                        # data/path
+	output:
+		zip = "{genotype}_{condition}_{sample}_{readpair}_fastqc.zip",                    # comma 
+		html= "{genotype}_{condition}_{sample}_{readpair}_fastqc.html"
+	threads:
+		4                       														 
+	shell:
+		"""
+		fastqc -t {threads} {input.rawreads} 
+		"""
+rule trimmomatic:
+    input:
+        forward_read = "{genotype}_{condition}_{sample}_01.gz",
+        reverse_read = "{genotype}_{condition}_{sample}_02.gz"
+    output:
+        forward_paired = "{genotype}_{condition}_{sample}_01_trimmedreads.gz",
+        forward_unpaired = "{genotype}_{condition}_{sample}_01_unpairedreads.gz",
+        reverse_paired = "{genotype}_{condition}_{sample}_02_trimmedreads.gz",
+        reverse_unpaired = "{genotype}_{condition}_{sample}_02_unpairedreads.gz"
+    threads:
+        8
+    message: "Trimming Illumina adapters from {input.forward_read} and {input.reverse_read}"
+    shell:
+        """
+        module load trimmomatic/0.39 && java -jar trimmomatic-0.39.jar PE {input.forward_read} {input.reverse_read} {output.forward_paired} {output.forward_unpaired} {output.reverse_paired} {output.reverse_unpaired} ILLUMINACLIP:TruSeq3-PE.fa:2:30:10:2:True LEADING:3 TRAILING:3 MINLEN:36 
+        """
+
+rule getGenomefasta:																						  # no input file
+	output:
+		genome_fasta = "GRCm39.primary_assembly.genome.fa.gz"
+	shell:
+		"""
+		wget https://ftp.ebi.ac.uk/pub/databases/gencode/Gencode_mouse/release_M32/GRCm39.primary_assembly.genome.fa.gz
+		"""
+
+rule getGenomegtf:																						  # no input file
+	output:
+		genome_gtf = "gencode.vM32.chr_patch_hapl_scaff.basic.annotation.gtf.gz"
+	shell:
+		"""
+		wget https://ftp.ebi.ac.uk/pub/databases/gencode/Gencode_mouse/release_M32/gencode.vM32.chr_patch_hapl_scaff.basic.annotation.gtf.gz
+		"""
+		
+rule starIndex: 																	      
+    input:
+        genome_fasta ="GRCm39.primary_assembly.genome.fa.gz",									
+        genome_gtf = "GRCm39.gtf"
+    output:
+        directory("GRCm39STAR")
+	threads:
+        20
+    shell:
+        """
+        STAR --runThreadN {threads} --runMode genomeGenerate --genomeDir {output} --genomeFastaFiles {input.genome_fasta} --sjdbGTFfile {genome_gtf} --sjdbOverhang 100
+        """
+
+rule starMapping:
+    input:
+        forward_paired = "{genotype}_{condition}_{sample}_01_trimmedreads.gz",
+        forward_unpaired = "{genotype}_{condition}_{sample}_01_unpairedreads.gz",
+        reverse_paired = "{genotype}_{condition}_{sample}_02_trimmedreads.gz",
+        reverse_unpaired = "{genotype}_{condition}_{sample}_02_unpairedreads.gz",
+        refdir = directory("GRCm39STAR")
+    params:
+        outdir = "{genotype}_{condition}_{sample}_pass1",
+        rmbam = "{genotype}_{condition}_{sample}_pass1/Aligned.out.bam"
+    output:
+        '{sample}_pass1/SJ.out.tab'
+    threads:
+        20
+    shell:
+        """
+        rm -rf {params.outdir} && mkdir {params.outdir} && cd {params.outdir} && STAR --runThreadN 20 --genomeDir {input.refdir} --readFilesIn {input.forward_paired},{input.forward_unpaired} {input.reverse_paired},{input.reverse_unpaired} --readFilesCommand zcat  --outSAMtype BAM Unsorted && rm {params.rmbam} && cd ..
+        """
+rule sort_alignments:
+    input:
+        "{genotype}_{condition}_{sample}_pass1/Aligned.out.bam"
+    output:
+        "{genotype}_{condition}_{sample}_pass1/Aligned.out.sorted.bam"
+    conda:
+        "envs/mapping.yaml"
+    shell:
+        "samtools sort -o {output} {input}"
