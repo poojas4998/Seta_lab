@@ -1,0 +1,742 @@
+---
+title: "difference_scratch"
+author: "prj4998"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+## R Markdown
+```{r}
+# set the working directory
+setwd("/projectnb/setagrp/pooja/data/Reports")
+```
+
+```{r pressure, echo=FALSE}
+
+libs <- c("tidyverse", "ggVennDiagram", "BiocManager",
+          "DESeq2", "edgeR", "limma", "pheatmap","dplyr","RColorBrewer","ggplot2","data.table","ggrepel","msigdbr","clusterProfiler","fgsea","biomaRt","DT","ggplot2","viridis","org.Mm.eg.db")
+# if you don't have a package installed, use BiocManager::install() or 
+# install.packages(), as previously discussed.
+for (package in libs) {
+  suppressPackageStartupMessages(require(package, 
+                                         quietly = T, 
+                                         character.only = T))
+  require(package, character.only = T)
+}
+
+```
+
+```{r}
+# load the counts data with column selection
+
+load_data <- function(featurecounts_file, mapping_file){
+  reads_table <- fread(featurecounts_file)
+  mapping_data <- read.csv(mapping_file)
+  
+  # Perform the gene ID mapping
+  reads_table$Gene_name <- mapping_data$Gene.Name[match(reads_table$Geneid, mapping_data$Gene.ID)]
+  new_reads_table <- reads_table[,-c("Geneid")] %>% relocate("Gene_name")
+  return(new_reads_table)
+}
+
+new_reads_table <- load_data("featurecounts_matrix.txt", "gene_data_snake.csv")
+```
+
+
+```{r}
+# Usage example: Include only specific columns by name or index
+columns_to_include <- c("Gene_name","KO_control_001", "KO_control_002","KO_control_003","KO_control_004","KO_control_005","KO_treatment_001","KO_treatment_002","KO_treatment_003","KO_treatment_004","KO_treatment_005")
+
+new_reads_table_KO <- new_reads_table[, ..columns_to_include]
+colnames(new_reads_table_KO)
+
+cts <-  as.matrix(new_reads_table_KO[,-c("Gene_name")])
+rownames(cts) <- new_reads_table_KO$Gene_name
+
+# load the sample information
+coldata <- data.frame(
+  sample = c(
+    "KO_control_001", "KO_control_002", "KO_control_003", "KO_control_004", "KO_control_005",
+    "KO_treatment_001", "KO_treatment_002", "KO_treatment_003", "KO_treatment_004", "KO_treatment_005"
+  ),
+  angiotensinII = c(
+    rep("untreated", 5),
+    rep("treated", 5)
+  ),
+  genotype = c(
+    rep("knockout", 10)
+  )
+)
+
+# set factor levels
+coldata$angiotensinII <- factor(coldata$angiotensinII)
+#coldata$genotype <- factor(coldata$genotype)
+
+# colnames(coldata)
+#print(coldata)
+
+run_deseq <- function(cts, coldata) {
+  cts <-  as.matrix(new_reads_table_KO[,-c("Gene_name")])
+  rownames(cts) <- new_reads_table_KO$Gene_name
+  # Create a DESeqDataSet object and import the count data and sample information
+  dds <- DESeqDataSetFromMatrix(countData = cts,
+                                colData = coldata,
+                                design = ~ angiotensinII)
+
+  return(dds)
+}
+
+dds <- run_deseq(cts,coldata)
+#dds
+
+# Set the reference to the treatment factor
+dds$angiotensinII <- factor(coldata$angiotensinII,levels = c("untreated","treated"))
+#dds$genotype <- factor(dds$genotype,levels = c("wildtype","knockout"))
+
+# Filter the genes
+keep <- rowSums(counts(dds)) >= 10
+dds <- dds[keep,]
+#dds
+
+# Perform the statistical test(s) to identify the differentially expressed genes
+dds <- DESeq(dds)
+res_KO <- results(dds, lfcThreshold = .58 , altHypothesis = "greaterAbs") # Interaction term, we are using contrast to figure out the compasiosn to make.
+res_KO
+
+# Change the DESeq Object to a R Dataframe
+res_KO = as.data.frame(res_KO)
+
+# Order the result table by increasing p-value
+res_ordered_KO <- res_KO %>% arrange(desc(log2FoldChange))
+res_ordered_KO
+res_KO_filtered <- res_ordered_KO %>% dplyr::filter(padj < 0.05)
+res_KO_filtered
+
+# Analysis of Differientially Expressed Genes 
+
+rownames_of_res1<-rownames(res_KO_filtered)
+# write_csv(res1,"KO_control_AngII.csv")
+resultsNames(dds)
+
+# Save the normalized counts
+original_normalized_counts_KO <- counts(dds, normalized = TRUE)
+normalized_counts_KO <- counts(dds[rownames(dds) %in% rownames(res_KO_filtered),], normalized = TRUE)
+```
+```{r}
+write.csv(as.data.frame(normalized_counts_KO),"excels/normalized_counts_KO.csv")
+```
+
+
+```{r}
+plot_counts_for_genes <- function(dds, res, intgroup, gene_names = 5) {
+  # Sort res1 by log2FoldChange and extract the top genes
+  genes_sorted <- rownames(res[order(res$log2FoldChange, decreasing = TRUE), ])
+  genes_to_plot <- genes_sorted[1:min(gene_names, length(genes_sorted))]  # Select top 10 genes or less if there are fewer genes
+  
+  # Plot counts for each gene in the genes_to_plot
+  for (gene in genes_to_plot) {
+    plotCounts(dds, gene = gene, intgroup = intgroup, main = paste("Gene:", gene))
+  }
+}
+```
+
+```{r}
+plot_counts_for_genes <- function(dds, res, intgroup, gene_names = 5, pdf_file = "gene_plots.pdf") {
+  # Sort res by log2FoldChange and extract the top genes
+  genes_sorted <- rownames(res[order(res$log2FoldChange, decreasing = TRUE), ])
+  genes_to_plot <- genes_sorted[1:min(gene_names, length(genes_sorted))]  # Select top 10 genes or less if there are fewer genes
+  
+  # Create a PDF file to save the plots
+  pdf(pdf_file)
+
+  # Plot counts for each gene in the genes_to_plot
+  for (gene in genes_to_plot) {
+    plotCounts(dds, gene = gene, intgroup = intgroup, main = paste("Gene:", gene))
+  }
+
+  # Close the PDF file
+  dev.off()
+}
+
+# Example usage:
+intgroup <- c("angiotensinII")
+plot_counts_for_genes(dds, res_KO, intgroup, pdf_file = "output_plots.pdf")
+
+```
+
+```{r}
+intgroup <- c("angiotensinII")
+plot_counts_for_genes(dds, res_KO, intgroup) #dds is different for KO and WT so needs to be twice present.
+```
+
+
+```{r}
+# Usage example: Include only specific columns by name or index
+columns_to_include <- c("Gene_name","WT_control_001", "WT_control_002","WT_control_003","WT_control_004","WT_control_005","WT_treatment_001","WT_treatment_002","WT_treatment_003","WT_treatment_004","WT_treatment_005")
+
+new_reads_table_WT <- new_reads_table[, ..columns_to_include]
+
+new_reads_table_WT
+colnames(new_reads_table_WT)
+
+cts <-  as.matrix(new_reads_table_WT[,-c("Gene_name")])
+rownames(cts) <- new_reads_table_WT$Gene_name
+colnames(cts)
+head(cts)
+
+# load the sample information
+coldata <- data.frame(
+  sample = c(
+    "WT_control_001", "WT_control_002","WT_control_003","WT_control_004","WT_control_005","WT_treatment_001","WT_treatment_002","WT_treatment_003","WT_treatment_004","WT_treatment_005"
+  ),
+  angiotensinII = c(
+    rep("untreated", 5),
+    rep("treated", 5)
+  ),
+  genotype = c(
+    rep("wildtype", 10)
+  )
+)
+
+# set factor levels
+coldata$angiotensinII <- factor(coldata$angiotensinII)
+#coldata$genotype <- factor(coldata$genotype)
+
+colnames(coldata)
+print(coldata)
+
+run_deseq <- function(cts, coldata) {
+  cts <-  as.matrix(new_reads_table_WT[,-c("Gene_name")])
+  rownames(cts) <- new_reads_table_WT$Gene_name
+  # Create a DESeqDataSet object and import the count data and sample information
+  dds_WT <- DESeqDataSetFromMatrix(countData = cts,
+                                colData = coldata,
+                                design = ~ angiotensinII)
+
+  return(dds_WT)
+}
+
+dds_WT <- run_deseq(cts,coldata)
+
+# Set the reference to the treatment factor
+dds_WT$angiotensinII <- factor(coldata$angiotensinII,levels = c("untreated","treated"))
+#dds$genotype <- factor(dds$genotype,levels = c("wildtype","knockout"))
+
+# Filter the genes
+keep <- rowSums(counts(dds)) >= 10
+dds_WT <- dds_WT[keep,]
+#dds
+
+# Perform the statistical test(s) to identify the differentially expressed genes
+dds_WT <- DESeq(dds_WT)
+res_WT <- results(dds_WT, lfcThreshold = .58 , altHypothesis = "greaterAbs") # Interaction term, we are using contrast to figure out the compasiosn to make.
+res_WT
+# Change the DESeq Object to a R Dataframe
+res_WT = as.data.frame(res_WT)
+res_ordered_WT <- arrange(res_WT,desc(log2FoldChange))
+res_ordered_WT
+res_WT_filtered <- res_ordered_WT %>% dplyr::filter(padj < 0.05)
+res_WT_filtered
+
+# Analysis of Differientially Expressed Genes 
+
+rownames_of_res1<-rownames(res_WT_filtered)
+write_csv(res_WT_filtered,"WT_control_AngII_Aug16.csv")
+#resultsNames(dds)
+
+# Save the normalized counts
+original_normalized_counts_WT <- counts(dds_WT, normalized = TRUE)
+normalized_counts_WT <- counts(dds_WT[rownames(dds_WT) %in% rownames(res_WT_filtered),], normalized = TRUE)
+```
+
+```{r}
+intgroup <- c("angiotensinII")
+plot_counts_for_genes(dds_WT, res_WT, intgroup)
+```
+
+```{r}
+
+WT_control_AngII <- res_WT_filtered
+KO_control_AngII <- res_KO_filtered
+
+#set1 <- WT_control_AngII$Gene_name #cant do this as it is not a dataframe,first column has no column name as it is a matrix
+#set2 <- KO_control_AngII$Gene_name #cant do this as it is not a dataframe,first column has no column name as it is a matrix
+
+set1 <- rownames(WT_control_AngII)
+set2 <- rownames(KO_control_AngII)
+
+overlap <- intersect(set1, set2)
+not_matching <- setdiff(set2, set1)
+not_matching2 <- setdiff(set1, set2)
+# Assuming you've defined 'overlap', 'not_matching', and 'not_matching2' as in your code
+
+# Extract data associated with genes exclusive to WT or KO
+data_exclusive_WT <- WT_control_AngII[rownames(WT_control_AngII) %in% not_matching2, ]
+data_exclusive_KO <- KO_control_AngII[rownames(KO_control_AngII) %in% not_matching, ]
+data_exclusive_WT
+data_exclusive_KO
+
+
+WT_control_AngII_all <- res_ordered_WT
+KO_control_AngII_all <- res_ordered_KO
+
+set1 <- rownames(WT_control_AngII_all)
+set2 <- rownames(KO_control_AngII_all)
+
+overlap <- intersect(set1, set2)
+not_matching <- setdiff(set2, set1)
+not_matching2 <- setdiff(set1, set2)
+# Assuming you've defined 'overlap', 'not_matching', and 'not_matching2' as in your code
+
+# Extract data associated with genes exclusive to WT or KO
+data_exclusive_WT_all <- WT_control_AngII_all[rownames(WT_control_AngII_all) %in% not_matching2, ]
+data_exclusive_KO_all <- KO_control_AngII_all[rownames(KO_control_AngII_all) %in% not_matching, ]
+data_exclusive_WT_all
+data_exclusive_KO_all
+```
+```{r}
+normalized_counts_KOspecific <- counts(dds[rownames(dds) %in% rownames(data_exclusive_KO),], normalized = TRUE)
+write.csv(as.data.frame(as.data.frame(normalized_counts_KOspecific)),"excels/normalized_counts_KOspecific.csv")
+as.data.frame(normalized_counts_KOspecific)
+```
+
+
+```{r}
+label_res <- function(deseq2_res, padj_threshold, label_threshold_log2FC = 1.3) {
+  labeled_results <- deseq2_res %>%
+    rownames_to_column("Gene_name") %>%
+    as_tibble() %>%
+    mutate(volc_plot_status = case_when(
+      !is.na(padj) & as.numeric(padj) < as.numeric(padj_threshold) & log2FoldChange > label_threshold_log2FC ~ "UP",
+      !is.na(padj) & as.numeric(padj) < as.numeric(padj_threshold) & log2FoldChange < -label_threshold_log2FC ~ "DOWN",
+      TRUE ~ "NS"
+    ), minus_log10_padj = -log10(padj),multiply_two_columns = -log10(padj)*log2FoldChange) %>%
+    relocate(Gene_name, volc_plot_status, log2FoldChange, padj)
+
+  return(labeled_results)
+}
+
+plot_volcano <- function(labeled_results, label_threshold_log2FC = 1.3,label_threshold = 1.3, label_n = 5) {
+  
+  # Filter points to be labeled based on log2FoldChange and -log10(padj) thresholds
+  labeled_points <- labeled_results %>%
+    filter(abs(log2FoldChange) > label_threshold_log2FC & -log10(padj) > label_threshold)
+  
+  # Determine the direction (UP/DOWN) based on log2FoldChange and limit the number of genes to label
+  up_labeled_points <- labeled_points %>%
+    filter(log2FoldChange > 0) %>%
+    top_n(min(label_n, n()), abs(log2FoldChange) * -log10(padj))
+
+  down_labeled_points <- labeled_points %>%
+    filter(log2FoldChange < 0) %>%
+    top_n(min(label_n+1, n()), abs(log2FoldChange) * -log10(padj))
+
+  # Combine the labeled points for UP and DOWN directions
+  labeled_points <- rbind(up_labeled_points, down_labeled_points)
+
+  ggplot(labeled_results, aes(log2FoldChange, -log10(padj))) +
+    geom_point(aes(color = volc_plot_status)) +
+    geom_text(data = labeled_points, aes(label = Gene_name), nudge_x = .2, nudge_y = .4, size = 3) +
+    xlab(expression("log2FoldChange")) + 
+    ylab(expression("-log10(padj)")) +
+    ggtitle("Differential Expression Analysis: KO-Specific Genes Volcano Plot") +
+    geom_hline(yintercept=label_threshold, linetype= 'dashed', color ='gray') +
+    geom_vline(xintercept = c(-label_threshold_log2FC, label_threshold_log2FC), 
+               linetype = 'dashed', color = 'gray') +  # Vertical lines for thresholds
+    scale_color_manual(values = c("UP" = "red", "DOWN" = "blue", "NS" = "grey")) 
+  # scale_x_continuous(limits = c(-8, 8))
+
+}
+
+zscore_heatmap <- function(normalized_counts, res) {
+  # top_hits <- row.names(res[order(res$padj), ])
+  top_hits <- row.names(res[order(-res$log2FoldChange), ][1:40, ]) # because ma'am is interested in log2foldchange, i changed the main title of the heatmap
+  #cal_z_score <- function(x) { (x - mean(x)) / sd(x) }
+  #zscore_all <- t(apply(normalized_counts, 1, cal_z_score))
+  #zscore_subset <- zscore_all
+  colors <- colorRampPalette(c("blue", "white", "red"))(100)
+
+  ComplexHeatmap::pheatmap(normalized_counts[top_hits,],color = colors, cluster_rows = T, cluster_cols = F, 
+                           heatmap_legend_param = list(title = "Z-score"), main = "Z-score Heatmap of Top 40 Upregulated DEGs", scale = "row",show_rownames= T)
+}
+
+zscore_heatmap_down <- function(normalized_counts, res) {
+  top_hits <- row.names(res[order(res$log2FoldChange), ][1:40, ])
+  # cal_z_score <- function(x) { (x - mean(x)) / sd(x) }
+  # zscore_all <- t(apply(normalized_counts, 1, cal_z_score))
+  # zscore_subset <- zscore_all[top_hits,]
+  colors <- colorRampPalette(c("blue", "white", "red"))(100)
+
+  ComplexHeatmap::pheatmap(normalized_counts[top_hits,], color = colors, cluster_rows = T, cluster_cols = F, 
+                           heatmap_legend_param = list(title = "Z-score"), main = "Z-score Heatmap of Top 40 Downregulated DEGs", scale = "row",show_rownames= T)
+}
+
+zscore_heatmap_padj <- function(normalized_counts, res) {
+  top_hits <- row.names(res[order(res$padj), ][1:25, ])
+  # cal_z_score <- function(x) { (x - mean(x)) / sd(x) }
+  # zscore_all <- t(apply(normalized_counts, 1, cal_z_score))
+  # zscore_subset <- zscore_all[top_hits,]
+  colors <- colorRampPalette(c("blue", "white", "red"))(100)
+  # ComplexHeatmap::pheatmap(zscore_subset, color = colors, cluster_rows = T, cluster_cols = F, 
+  #                          heatmap_legend_param = list(title = "Z-score"), main = "Heatmap based on Z-score of top 50 based on padj", scale = "row",show_rownames= T)
+  ComplexHeatmap::pheatmap(normalized_counts[top_hits,], color = colors, cluster_rows = T, cluster_cols = F, 
+                           heatmap_legend_param = list(title = "Z-score"), main = "Z-score heatmap of Top 25 DEGs", scale = "row",show_rownames= T)
+}
+
+```
+
+
+```{r}
+labeled_results <- label_res(data_exclusive_KO, .01)
+labeled_results <- labeled_results %>% arrange(log2FoldChange) 
+labeled_results
+labeled_results['Gene_name']
+
+
+# Subset genes with volc_plot_status "UP"
+genes_up <- subset(labeled_results, volc_plot_status == "UP") 
+# genes_up['Gene_name']
+# Subset genes with volc_plot_status "DOWN"
+genes_down <- subset(labeled_results, volc_plot_status == "DOWN") 
+# genes_down['Gene_name']
+
+volcano_plot <- plot_volcano(labeled_results, label_threshold_log2FC = 1.3, label_threshold = 2, label_n = 7)
+volcano_plot
+write.csv(as.data.frame(labeled_results %>% mutate(FoldChange = 2^(log2FoldChange))),"excels/volcanoplot_KOspecific.csv")
+
+
+(top_40_upregulated <- data_exclusive_KO[order(-data_exclusive_KO$log2FoldChange), ][1:40, ]) %>% mutate(FoldChange = 2^(log2FoldChange)) # tibble
+
+top_40_upregulated_xls <- counts(dds[rownames(dds) %in% rownames(top_40_upregulated),], normalized = TRUE)
+write.csv(as.data.frame(as.data.frame(top_40_upregulated_xls)),"excels/normalizedcounts_top40up_KOspecific.csv")
+as.data.frame(top_40_upregulated_xls)
+
+
+
+top_40_padjusted_xls <- counts(dds[rownames(dds) %in% rownames(data_exclusive_KO %>% arrange(padj) %>% head(25)),], normalized = TRUE)
+write.csv(as.data.frame(as.data.frame(top_40_padjusted_xls)),"excels/normalizedcounts_top40padj_KOspecific.csv")
+as.data.frame(top_40_padjusted_xls)
+
+(top_40_downregulated <- data_exclusive_KO[order(data_exclusive_KO$log2FoldChange), ][1:40, ]) %>% mutate(FoldChange = 2^(log2FoldChange)) # tibble
+
+top_40_downregulated_xls <- counts(dds[rownames(dds) %in% rownames(top_40_downregulated),], normalized = TRUE)
+write.csv(as.data.frame(as.data.frame(top_40_downregulated_xls)),"excels/normalizedcounts_top40down_KOspecific.csv")
+as.data.frame(top_40_downregulated_xls)
+
+data_exclusive_KO %>% arrange(padj) %>% head(25)
+
+write.csv(as.data.frame(top_40_upregulated),"excels/top40up_KOspecific.csv")
+write.csv(as.data.frame(top_40_downregulated),"excels/top40down_KOspecific.csv")
+write.csv(as.data.frame(data_exclusive_KO %>% arrange(padj) %>% mutate(FoldChange = 2^(log2FoldChange))),"excels/padj_ordered_KOspecific.csv")
+
+
+datatable(data_exclusive_KO %>% arrange(padj) %>% head(25), extensions = 'Buttons', options = list(pageLength = 10, autoWidth = TRUE, dom = 'Bfrtip', scrollX = TRUE,buttons = c('copy', 'csv', 'excel', 'pdf', 'print')))
+
+upregulated40_exclusive_KO <- zscore_heatmap(normalized_counts_KO,data_exclusive_KO)
+downregulated40_exclusive_KO <- zscore_heatmap_down(normalized_counts_KO,data_exclusive_KO)
+padj_exclusive_KO <- zscore_heatmap_padj(normalized_counts_KO,data_exclusive_KO)
+
+png('heatmap_pics/volcanoplot_KOspecific.png',res = 250, width = 2500, height = 2000)
+print(volcano_plot)
+dev.off()
+
+png('heatmap_pics/top40up_KOspecific.png',res = 250, width = 2500, height = 2000)
+print(upregulated40_exclusive_KO)
+dev.off()
+
+png('heatmap_pics/top40down_KOspecific.png',res = 250, width = 2500, height = 2000)
+print(downregulated40_exclusive_KO)
+dev.off()
+
+png('heatmap_pics/top40padj_KOspecific.png',res = 250, width =  2500, height = 2000)
+print(padj_exclusive_KO)
+dev.off()
+```
+```{r}
+padj_exclusive_KO <- zscore_heatmap_padj(normalized_counts_KO,data_exclusive_KO)
+
+png('heatmap_pics/padj_KOspecific.png',res = 250, width = 2500, height = 2000)
+print(padj_exclusive_KO)
+dev.off()
+```
+
+```{r}
+genes_up
+genes_down
+```
+
+```{r}
+labeled_results <- label_res(data_exclusive_KO_all, .05)
+labeled_results <- labeled_results %>% arrange(log2FoldChange) 
+labeled_results
+labeled_results['Gene_name']
+
+# Subset genes with volc_plot_status "UP"
+genes_up <- subset(labeled_results, volc_plot_status == "UP") 
+# genes_up['Gene_name']
+# Subset genes with volc_plot_status "DOWN"
+genes_down <- subset(labeled_results, volc_plot_status == "DOWN") 
+# genes_down['Gene_name']
+
+volcano_plot <- plot_volcano(labeled_results)
+volcano_plot
+genes_down
+
+```
+
+```{r}
+labeled_results <- label_res(data_exclusive_WT, .05) 
+labeled_results <- arrange(labeled_results, log2FoldChange) 
+labeled_results
+labeled_results['Gene_name']
+
+
+# Subset genes with volc_plot_status "UP"
+genes_up <- subset(labeled_results, volc_plot_status == "UP") 
+# genes_up['Gene_name']
+# Subset genes with volc_plot_status "DOWN"
+genes_down <- subset(labeled_results, volc_plot_status == "DOWN") 
+# genes_down['Gene_name']
+
+
+volcano_plot <- plot_volcano(labeled_results, label_n = 5)
+volcano_plot
+
+# top 40 upregulated and top 40 downregulated
+(top_40_upregulated <- genes_up %>% arrange(desc(log2FoldChange)) %>% head(40))
+(top_40_downregulated <- genes_down %>% arrange(log2FoldChange) %>% head(40))
+
+upregulated40_exclusive_WT <- zscore_heatmap(normalized_counts_WT,data_exclusive_WT)
+downregulated40_exclusive_WT <- zscore_heatmap_down(normalized_counts_WT,data_exclusive_WT)
+
+png('heatmap_pics/upregulated40_exclusive_WT.png',res = 250, width = 2500, height = 2000)
+print(upregulated40_exclusive_KO)
+dev.off()
+
+png('heatmap_pics/downregulated40_exclusive_WT.png',res = 250, width = 2500, height = 2000)
+print(downregulated40_exclusive_WT)
+dev.off()
+```
+
+
+```{r}
+# Remove genes mentioned in 'top_40_upregulated'
+# normalized_counts_WT
+genelist_KO <- rownames(normalized_counts_KO) 
+top_40_upregulated$Gene_name
+
+zscore_heatmap(normalized_counts_WT, data_exclusive_WT)
+# zscore_heatmap(normalized_counts_KO, data_exclusive_KO)
+```
+
+```{r}
+data_exclusive_KO
+res1 <- arrange(data_exclusive_KO,desc(data_exclusive_KO$log2FoldChange))
+res1
+
+
+plot_counts_for_genes <- function(dds, res, intgroup, gene_names = 10) {
+  # Sort res1 by log2FoldChange and extract the top genes
+  genes_sorted <- rownames(res[order(res$log2FoldChange, decreasing = TRUE), ])
+  genes_to_plot <- genes_sorted[1:min(gene_names, length(genes_sorted))]  # Select top 10 genes or less if there are fewer genes
+
+  # Plot counts for each gene in the genes_to_plot
+  for (gene in genes_to_plot) {
+    plotCounts(dds, gene = gene, intgroup = intgroup, main = paste("Gene:", gene))
+  }
+}
+
+intgroup <- c("angiotensinII")
+
+# plot_counts_for_genes(dds, res1, intgroup)
+
+######################################
+plot_counts_for_genes <- function(dds, res, intgroup, gene_names = 50) {
+  # Sort res by log2FoldChange and extract the top genes
+  genes_sorted <- rownames(res[order(res$log2FoldChange, decreasing = TRUE), ])
+  genes_to_plot <- genes_sorted[1:min(gene_names, length(genes_sorted))]  # Select top 10 genes or less if there are fewer genes
+
+  # Open a PDF device to save the plots
+  pdf("gene_counts_plots.pdf")
+
+  # Plot counts for each gene in the genes_to_plot
+  for (gene in genes_to_plot) {
+    plotCounts(dds, gene = gene, intgroup = intgroup, main = paste("Gene:", gene))
+  }
+
+  # Close the PDF device after plotting all the counts
+  dev.off()
+}
+
+intgroup <- c("angiotensinII")
+
+
+
+```
+
+# GENE SET ENRICHMENT ANALYSIS
+```{r}
+
+res_ordered_KO
+#https://bioinformatics-core-shared-training.github.io/Bulk_RNAseq_Course_2021_June/Markdowns/09_Linear_Models.html
+# create a simulated DESeqDataSeq object
+res1 <- res_ordered_KO %>% dplyr::arrange(desc(res_ordered_KO$log2FoldChange))
+genelist <- rownames(res1)
+metric <- res1$log2FoldChange
+names(metric) <- genelist
+
+results_with_gene_column <- rownames_to_column(res1, var = "Gene_name")
+
+
+results_with_gene_column %>% dplyr::arrange(desc(log2FoldChange))
+
+namedlist = signif(metric,digits = 10)
+```
+
+# Gene Set Enrichment Analysis Code
+```{r}
+GSEA_function <- function(dataset_path = NULL, namedlist = NULL, padj_filter = NULL, title = "") {
+  set.seed(123)
+
+  dataset <- gmtPathways(dataset_path)
+  result <- fgsea::fgsea(pathways = dataset, stats = namedlist)
+  
+  significant_results <- subset(result, padj < padj_filter) %>%
+    arrange(desc(NES)) %>%
+    mutate(leadingEdge = sapply(leadingEdge, function(x) paste(x, collapse = ", ")))
+
+  significant_results_ascending <- subset(result, padj < padj_filter) %>%
+    arrange(NES) %>%
+    mutate(leadingEdge = sapply(leadingEdge, function(x) paste(x, collapse = ", ")))
+  
+  top_10_padjusted <- subset(significant_results, padj < padj_filter) %>%
+    arrange(significant_results$padj) %>%
+    mutate(leadingEdge = sapply(leadingEdge, function(x) paste(x, collapse = ", "))) %>%
+    head(20)
+  
+  # 3. Get the top 10 gene sets with the highest NES
+  top_10_highest_NES <- head(significant_results, 40)
+
+  # 4. Get the top 10 gene sets with the lowest NES
+  top_10_lowest_NES <- head(significant_results_ascending, 40)
+  
+  # 1. Define the custom label replacement function
+  replace_label <- function(x) {
+    replacements <- c("^HALLMARK_" = "", "^REACTOME_" = "", "^BIOCARTA_" = "",
+                      "^WP_" = "", "_TARGET_GENES$" = "", "^GOCC_" = "",
+                      "^GOMF_" = "", "^MP_" = "", "^TABULA_MURIS_SENIS_" = "")
+    for (prefix in names(replacements)) {
+      x <- gsub(prefix, replacements[prefix], x)
+    }
+    return(x)
+  }
+  
+  # 2. Replace pathway labels based on the custom_label or predefined replacements
+  plot <- ggplot(result, aes(reorder(replace_label(pathway), NES), NES)) +
+    geom_col(aes(fill = padj < padj_filter)) +
+    coord_flip() +
+    labs(x = "Pathway", y = "Normalized Enrichment Score",
+         title = title, fill = paste("padj <", padj_filter)) +
+    scale_fill_manual(values = c("TRUE" = "#00BFC4", "FALSE" = "#F8766D")) +
+    theme_minimal()
+  
+  filteredplot <- ggplot(significant_results, aes(reorder(replace_label(pathway), NES), NES)) +
+    geom_col(aes(fill = padj < padj_filter)) +
+    coord_flip() +
+    labs(x = "Pathway", y = "Normalized Enrichment Score",
+         title = title, fill = paste("padj <", padj_filter)) +
+    theme_minimal()
+  
+  top_10_highest_NES_plot <- ggplot(top_10_highest_NES, aes(reorder(replace_label(pathway), NES), NES)) +
+    geom_col(aes(fill = padj < padj_filter)) +
+    coord_flip() +
+    labs(x = "Pathway", y = "Normalized Enrichment Score",
+         title = title, fill = paste("padj <", padj_filter)) +
+    theme_minimal()
+  
+    top_10_padjusted_plot <- ggplot(top_10_padjusted, aes(reorder(replace_label(pathway), padj), padj)) +
+    geom_col(aes(fill = padj < padj_filter)) +
+    coord_flip() +
+    labs(x = "Pathway", y = "q-score calculation",
+         title = title) +
+    theme_minimal()
+  
+  return(list(significant_results = significant_results,top_10_padjusted=top_10_padjusted,top_10_highest_NES = top_10_highest_NES,
+    top_10_lowest_NES = top_10_lowest_NES, plot = plot, filteredplot = filteredplot,top_10_highest_NES_plot=top_10_highest_NES_plot, top_10_padjusted_plot= top_10_padjusted_plot))
+}
+```
+
+## path which contains all the GSEA datasets
+```{r}
+path <- "/projectnb/setagrp/pooja/data/msigdb/"
+```
+
+# All the subsequent Datasets being used  
+Information regarding the datasets used can be found here:
+https://www.gsea-msigdb.org/gsea/msigdb/mouse/collections.jsp
+```{r}
+# M2_curated_gene_sets <- "m2.all.v2023.1.Mm.symbols.gmt" not used
+#chromosomal_postional <- "m1.all.v2023.1.Mm.symbols.gmt"
+# chemical_genetic_pertubation <- "m2.cgp.v2023.1.Mm.symbols.gmt" not used
+M3_regulatory_target_gene_sets <- "m3.all.v2023.1.Mm.symbols.gmt"
+# miRDB_gene_sets <- "m3.mirdb.v2023.1.Mm.symbols.gmt" 
+# GeneOntology <- "m5.go.v2023.1.Mm.symbols.gmt"
+# M5_ontology_gene_sets <- "m5.all.v2023.1.Mm.symbols.gmt"
+# BP_subset_of_GO <- "m5.go.bp.v2023.1.Mm.symbols.gmt"
+# MPT_tumor_phenotype_ontology <- "m5.mpt.v2023.1.Mm.symbols.gmt"
+#CC_subset_of_GO <- "m5.go.cc.v2023.1.Mm.symbols.gmt"
+#MF_subset_of_GO <- "m5.go.mf.v2023.1.Mm.symbols.gmt"
+#cell_type_signature<-"m8.all.v2023.1.Mm.symbols.gmt"
+# all_gene_sets <- "msigdb.v2023.1.Mm.symbols.gmt"
+
+hallmark <- "mh.all.v2023.1.Mm.symbols.gmt" 
+canonical_pathway <- "m2.cp.v2023.1.Mm.symbols.gmt" # select this
+BioCarta <- "m2.cp.biocarta.v2023.1.Mm.symbols.gmt" # select this
+Reactome <- "m2.cp.reactome.v2023.1.Mm.symbols.gmt" 
+WikiPathways <- "m2.cp.wikipathways.v2023.1.Mm.symbols.gmt"
+GTRD_gene_sets <- "m3.gtrd.v2023.1.Mm.symbols.gmt"
+
+```
+
+
+#canonical_pathway
+```{r}
+canonical_pathway_results <- GSEA_function(dataset_path = file.path(path,canonical_pathway),namedlist = signif(metric,digits = 10),padj_filter = 0.01,title = "canonical_pathway")
+
+# canonical_pathway_results$plot
+# canonical_pathway_results$filteredplot
+canonical_pathway_results$significant_results
+canonical_pathway_results$significant_results %>% arrange(canonical_pathway_results$significant_results$padj)
+canonical_pathway_results$top_10_highest_NES_plot
+canonical_pathway_results$top_10_padjusted
+canonical_pathway_results$top_10_padjusted_plot
+# canonical_pathway_results$top_10_highest_NES
+# canonical_pathway_results$top_10_lowest_NES
+
+write.csv(as.data.frame(canonical_pathway_results$significant_results),"excels/canonical_pathway_results_significant_results.csv")
+write.csv(as.data.frame(canonical_pathway_results$top_10_padjusted),"excels/canonical_pathway_results_top_10_padjusted.csv")
+
+
+# datatable(canonical_pathway_results$top_10_padjusted, extensions = 'Buttons', options = list(pageLength = 10, autoWidth = TRUE,dom = 'Bfrtip', srollX = TRUE,buttons = c('copy', 'csv', 'excel', 'pdf', 'print')))
+```
+
+
+
+```{r}
+canonical_pathway_results$top_10_padjusted_plot
+png('gsea_pics/top_10_padjusted_plot.png',res = 250, width = 2500, height = 2000)
+print(canonical_pathway_results$top_10_padjusted_plot)
+dev.off()
+
+```
+```{r}
+# Convert the variable to a data frame
+df_original_normalized_counts_KO <- as.data.frame(original_normalized_counts_KO)
+write.csv(as.data.frame(df_original_normalized_counts_KO),"excels/df_original_normalized_counts_KO.csv")
+
+# write.csv(as.data.frame(df_normalized_counts_KO),"excels/df_normalized_counts_KO.csv")
+
+normalized_counts_KOspecific <- counts(dds[rownames(dds) %in% rownames(data_exclusive_KO),], normalized = TRUE)
+write.csv(as.data.frame(normalized_counts_KOspecific),"excels/normalized_counts_KOspecific.csv")
+```
+

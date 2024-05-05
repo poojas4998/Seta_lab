@@ -1,0 +1,124 @@
+---
+title: "Difference"
+output: html_notebook
+---
+
+
+```{r}
+library(readr)
+setwd("/projectnb/setagrp/pooja final results/")
+WT_control_AngII <- reead_csv("WT_control_AngII_Aug16.csv", show_col_types = FALSE) #p-value <0.05
+KO_control_AngII <- read_csv("KO_control_AngII_Aug16.csv", show_col_types = FALSE)  #p-value <0.05
+WT_control_AngII
+KO_control_AngII
+```
+
+```{r}
+
+set1 <- WT_control_AngII$Gene_name
+set2 <- KO_control_AngII$Gene_name
+
+overlap <- intersect(set1, set2)
+not_matching <- setdiff(set2, set1)
+not_matching2 <- setdiff(set1, set2)
+
+# Extract log2FoldChange values for common genes
+wt_log2fc <- WT_control_AngII$log2FoldChange[WT_control_AngII$Gene_name %in% overlap]
+ko_log2fc <- KO_control_AngII$log2FoldChange[KO_control_AngII$Gene_name %in% overlap]
+wt_pvalue <- WT_control_AngII$pvalue[WT_control_AngII$Gene_name %in% overlap]
+ko_pvalue <- KO_control_AngII$pvalue[KO_control_AngII$Gene_name %in% overlap]
+wt_padj <- WT_control_AngII$padj[WT_control_AngII$Gene_name %in% overlap]
+ko_padj <- KO_control_AngII$padj[KO_control_AngII$Gene_name %in% overlap]
+
+# Create a new data frame with common genes and log2FoldChange values
+common_gene_data <- data.frame(
+  Gene_name = overlap,
+  WT_log2FoldChange = wt_log2fc,
+  KO_log2FoldChange = ko_log2fc,
+  WT_FoldChange = 2^(wt_log2fc),
+  KO_FoldChange = 2^(ko_log2fc),
+  WT_FoldChange_absolute = 2^abs(wt_log2fc),
+  KO_FoldChange_absolute = 2^abs(ko_log2fc),
+  WT_Pvalue = wt_pvalue,
+  KO_Pvalue = ko_pvalue,
+  WT_Padjusted = wt_padj,
+  KO_Padjusted = ko_padj
+)
+
+common_gene_data
+
+# Calculate the maximum difference between log2FoldChange values
+common_gene_data$max_difference_log2FoldChange <- abs(common_gene_data$WT_log2FoldChange - common_gene_data$KO_log2FoldChange)
+
+common_gene_data$max_difference_FoldChange <- abs(common_gene_data$WT_FoldChange - common_gene_data$KO_FoldChange)
+
+# Order the data frame by maximum difference in descending order
+ordered_data <- common_gene_data[order(common_gene_data$max_difference_log2FoldChange, decreasing = TRUE), ]
+
+ordered_data
+
+write_csv(as.data.frame(overlap),"overlap_Oct25.csv")
+#write.csv(as.data.frame(not_matching),"KO_control_AngII_difference_with_WT_control_AngII_Oct25.csv")
+#write.csv(as.data.frame(not_matching2),"WT_control_AngII_difference_with_KO_control_AngII_Oct25.csv")
+write.csv(as.data.frame(ordered_data),"ordered_data_Oct25.csv")
+```
+
+```{r}
+# Extract log2FoldChange values for common genes
+#wt_log2fc <- WT_control_AngII$log2FoldChange[WT_control_AngII$Gene_name %in% not_matching]
+ko_log2fc <- KO_control_AngII$log2FoldChange[KO_control_AngII$Gene_name %in% not_matching]
+ko_pvalue <- KO_control_AngII$pvalue[KO_control_AngII$Gene_name %in% not_matching]
+ko_padj <- KO_control_AngII$padj[KO_control_AngII$Gene_name %in% not_matching]
+
+#wt_log2fc
+ko_log2fc
+# Present in KO and not in WT
+In_KO_and_notin_WT <- data.frame(
+  Gene_name = not_matching,
+  KO_log2FoldChange = ko_log2fc,
+  KO_FoldChange = 2^(ko_log2fc),
+  KO_FoldChange_absolute = 2^abs(ko_log2fc),
+  KO_Pvalue = ko_pvalue,
+  KO_Padjusted = ko_padj
+  
+)
+In_KO_and_notin_WT
+# Order the data frame by maximum difference in descending order
+ordered_data_1 <- In_KO_and_notin_WT[order(In_KO_and_notin_WT$KO_log2FoldChange, decreasing = TRUE), ]
+ordered_data_1
+
+```
+
+
+```{r}
+# Extract log2FoldChange values for common genes
+wt_log2fc <- WT_control_AngII$log2FoldChange[WT_control_AngII$Gene_name %in% not_matching2]
+#ko_log2fc <- KO_control_AngII$log2FoldChange[KO_control_AngII$Gene_name %in% not_matching]
+wt_pvalue <- WT_control_AngII$pvalue[WT_control_AngII$Gene_name %in% not_matching2]
+wt_padj <- WT_control_AngII$padj[WT_control_AngII$Gene_name %in% not_matching2]
+
+
+wt_log2fc
+#ko_log2fc
+
+# Present in WT and not in KO
+In_WT_and_notin_KO <- data.frame(
+  Gene_name = not_matching2,
+  WT_log2FoldChange = wt_log2fc,
+  WT_FoldChange = 2^(wt_log2fc),
+  WT_FoldChange_absolute = 2^abs(wt_log2fc),
+  WT_Pvalue = wt_pvalue,
+  WT_Padjusted = wt_padj
+)
+In_WT_and_notin_KO
+# Order the data frame by maximum difference in descending order
+ordered_data_2 <- In_WT_and_notin_KO[order(In_WT_and_notin_KO$WT_log2FoldChange, decreasing = TRUE), ]
+ordered_data_2
+
+write.csv(as.data.frame(ordered_data_1),"KO_control_AngII_difference_with_WT_control_AngII_Oct25.csv")
+write.csv(as.data.frame(ordered_data_2),"WT_control_AngII_difference_with_KO_control_AngII_Oct25.csv")
+```
+```{r}
+KO_dataset <- KO_control_AngII %>% filter(Gene_name %in% not_matching)
+WT_dataset <- WT_control_AngII %>% filter(Gene_name %in% not_matching2)
+```
