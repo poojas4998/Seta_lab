@@ -1,0 +1,531 @@
+---
+title: "KO_control_vs_AngII_report.Rmd"
+author: "prj4998"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+```{r}
+# set the working directory
+setwd("/projectnb/setagrp/pooja/data/Reports")
+```
+
+```{r pressure, echo=FALSE}
+
+libs <- c("tidyverse", "ggVennDiagram", "BiocManager",
+          "DESeq2", "edgeR", "limma", "pheatmap","dplyr","RColorBrewer","ggplot2","data.table","ggrepel","msigdbr","clusterProfiler","fgsea","biomaRt","DT","ggplot2","viridis","org.Mm.eg.db")
+# if you don't have a package installed, use BiocManager::install() or 
+# install.packages(), as previously discussed.
+for (package in libs) {
+  suppressPackageStartupMessages(require(package, 
+                                         quietly = T, 
+                                         character.only = T))
+  require(package, character.only = T)
+}
+
+```
+
+```{r}
+# load the counts data with column selection
+
+load_data <- function(featurecounts_file, mapping_file){
+  reads_table <- fread(featurecounts_file)
+  mapping_data <- read.csv(mapping_file)
+  
+  # Perform the gene ID mapping
+  reads_table$Gene_name <- mapping_data$Gene.Name[match(reads_table$Geneid, mapping_data$Gene.ID)]
+  new_reads_table <- reads_table[,-c("Geneid")] %>% relocate("Gene_name")
+  return(new_reads_table)
+}
+
+new_reads_table <- load_data("featurecounts_matrix.txt", "gene_data_snake.csv")
+
+
+# Usage example: Include only specific columns by name or index
+columns_to_include <- c("Gene_name","WT_treatment_001", "WT_treatment_002","WT_treatment_003","WT_treatment_004","WT_treatment_005","KO_treatment_001","KO_treatment_002","KO_treatment_003","KO_treatment_004","KO_treatment_005")
+
+new_reads_table <- new_reads_table[, ..columns_to_include]
+
+new_reads_table
+colnames(new_reads_table)
+```
+
+```{r}
+cts <-  as.matrix(new_reads_table[,-c("Gene_name")])
+rownames(cts) <- new_reads_table$Gene_name
+```
+
+```{r}
+# load the sample information
+coldata <- data.frame(
+  sample = c(
+    "WT_treatment_001", "WT_treatment_002", "WT_treatment_003", "WT_treatment_004", "WT_treatment_005",
+    "KO_treatment_001", "KO_treatment_002", "KO_treatment_003", "KO_treatment_004", "KO_treatment_005"
+  ),
+  angiotensinII = c(
+    rep("treated", 10)
+  ),
+  genotype = c(
+    rep("wildtype", 5),
+    rep("knockout", 5)
+    
+  )
+)
+
+# set factor levels
+#coldata$angiotensinII <- factor(coldata$angiotensinII)
+coldata$genotype <- factor(coldata$genotype)
+
+colnames(coldata)
+print(coldata)
+```
+
+```{r}
+run_deseq <- function(cts, coldata) {
+  cts <-  as.matrix(new_reads_table[,-c("Gene_name")])
+  rownames(cts) <- new_reads_table$Gene_name
+  # Create a DESeqDataSet object and import the count data and sample information
+  dds <- DESeqDataSetFromMatrix(countData = cts,
+                                colData = coldata,
+                                design = ~ genotype)
+
+  return(dds)
+}
+
+dds <- run_deseq(cts,coldata)
+dds
+
+# Set the reference to the treatment factor
+#dds$angiotensinII <- factor(coldata$angiotensinII,levels = c("untreated","treated"))
+dds$genotype <- factor(dds$genotype,levels = c("wildtype","knockout"))
+
+# Filter the genes
+keep <- rowSums(counts(dds)) >= 10
+dds <- dds[keep,]
+dds
+
+# Perform the statistical test(s) to identify the differentially expressed genes
+dds <- DESeq(dds)
+res <- results(dds, lfcThreshold = .58 , altHypothesis = "greaterAbs") # Interaction term, we are using contrast to figure out the compasiosn to make.
+res
+
+# Change the DESeq Object to a R Dataframe
+res = as.data.frame(res)
+```
+
+```{r}
+# Analysis of Differientially Expressed Genes 
+
+filter_results <- function(dds, padj_value = 0.05, contrast_name = NULL) {
+  if (!is.null(contrast_name)) {
+    res <- results(dds, contrast = contrast_name)
+  } else {
+    res <- results(dds)
+  }
+  
+  # non zero fold change, in deseq2, is there a non zero change between these two conditions. # cant just filter results of log2foldchange. it wasnt testing if fc is > certain value
+  
+  filtered_res <- as.data.frame(res)
+  filtered_res <- filtered_res %>% filter(filtered_res$padj < padj_value)
+  return(filtered_res)
+}
+
+res1 <- filter_results(dds)
+
+dim(res)
+
+dim(res1)
+rownames_of_res1<-rownames(res1)
+res1 <- res1 %>% rownames_to_column("Gene_name")
+write_csv(res1,"WT_AngII_KO_AngII_Aug16.csv")
+
+```
+
+```{r}
+resultsNames(dds)
+```
+
+
+```{r}
+# Save the normalized counts
+original_normalized_counts <- counts(dds, normalized = TRUE)
+head(original_normalized_counts)
+write.csv(original_normalized_counts,'normalized_counts.csv')
+
+normalized_counts <- counts(dds[rownames(dds) %in% rownames(res1),], normalized = TRUE)
+head(normalized_counts)
+write.csv(normalized_counts, 'filtered_normalized_counts.csv')
+```
+
+```{r}
+# Dispersion results
+# as gene read count increases, dispersion decreases
+plotDispEsts(dds)
+
+# Principal Component Analysis (pca)
+# dimensionality reduction technique and in gene expression analysis, it can be used to explain the variance in gene expression datasets
+
+# Variance stabilizing transformation 
+vsd <- vst(dds,blind = FALSE)
+# use transformed values to generate a pca plot 
+plotPCA(vsd, intgroup=c("genotype","angiotensinII"))
+
+
+```
+
+```{r}
+# heatmap of sample-to-sample distance matrix (with clustering) based on the normalized counts.
+# generate the distance matrix 
+sampleDists <- dist(t(assay(vsd)))
+sampleDistsMatrix <- as.matrix(sampleDists)
+# set a color scheme
+colors <- colorRampPalette(brewer.pal(9,"Blues"))(255)
+# generate the heatmap
+ComplexHeatmap::pheatmap(sampleDistsMatrix, cluster_rows= F, cluster_cols = F, clustering_distance_rows = sampleDists, clustering_distance_cols = sampleDists, col = colors,legend = TRUE, 
+main = "Sample to Sample Distance Matrix",heatmap_legend_param = list( at = c(0,10,20,30,40,50,60,70,80,90,100)))
+```
+```{r}
+
+generate_heatmap <- function(res, annotation_info = NULL, contrast_name = NULL, padj_value = 0.05) {
+  top_hits <- row.names(res[order(res$padj), ])
+
+  rld <- rlog(dds, blind = FALSE)
+
+  # Using the "Blues" color palette from the viridis package (shades of blue)
+  colors <- rev(colorRampPalette(viridis::plasma(100))(100))
+
+  if (!is.null(annotation_info)) {
+    ComplexHeatmap::pheatmap(assay(rld)[top_hits, ], cluster_rows = T, show_rownames = F,main="log transformed normalized counts" ,legend = TRUE, cluster_cols = FALSE, annotation_col = annotation_info, color = colors)
+  } else {
+    ComplexHeatmap::pheatmap(assay(rld)[top_hits, ], cluster_rows = T, show_rownames = T,main="log transformed normalized counts",legend = TRUE,cluster_cols = FALSE, color = colors)
+  }
+}
+
+
+#Heatmap of log transformed normalized counts of of all genes
+# DEG's cluster heatmap 
+
+generate_heatmap(res1, annotation_info = as.data.frame(colData(dds)[, c("genotype", "angiotensinII")]))
+```
+
+
+```{r}
+zscore_heatmap <- function(normalized_counts, res) {
+  top_hits <- row.names(res[order(res$padj), ])
+
+  #cal_z_score <- function(x) { (x - mean(x)) / sd(x) }
+  #zscore_all <- t(apply(normalized_counts, 1, cal_z_score))
+  #zscore_subset <- zscore_all
+  colors <- colorRampPalette(c("blue", "white", "red"))(100)
+
+  ComplexHeatmap::pheatmap(normalized_counts, color = colors, cluster_rows = T, cluster_cols = F, 
+                           heatmap_legend_param = list(title = "Z-score"), main = "Heatmap based on Z-score ordered by padj", scale = "row",show_rownames= F)
+}
+
+# Example usage with normalized_counts and res
+# Assuming you have 'normalized_counts' and 'res' variables from your analysis
+zscore_heatmap(normalized_counts, res1)
+```
+
+```{r}
+res1 <- arrange(res1,desc(res1$log2FoldChange))
+res1
+
+datatable(arrange(res1, desc(res1$log2FoldChange)), extensions = 'Buttons', options = list(pageLength = 10, autoWidth = TRUE, dom = 'Bfrtip', scrollX = TRUE,buttons = c('copy', 'csv', 'excel', 'pdf', 'print')))
+
+plot_counts_for_genes <- function(dds, res, intgroup, gene_names = 10) {
+  # Sort res1 by log2FoldChange and extract the top genes
+  genes_sorted <- rownames(res[order(res$log2FoldChange, decreasing = TRUE), ])
+  genes_to_plot <- genes_sorted[1:min(gene_names, length(genes_sorted))]  # Select top 10 genes or less if there are fewer genes
+
+  # Plot counts for each gene in the genes_to_plot
+  for (gene in genes_to_plot) {
+    plotCounts(dds, gene = gene, intgroup = intgroup, main = paste("Gene:", gene))
+  }
+}
+
+intgroup <- c("genotype")
+
+plot_counts_for_genes(dds, res1, intgroup)
+
+```
+
+# GENE SET ENRICHMENT ANALYSIS
+```{r}
+#https://bioinformatics-core-shared-training.github.io/Bulk_RNAseq_Course_2021_June/Markdowns/09_Linear_Models.html
+# create a simulated DESeqDataSeq object
+res1 <- res1 %>% dplyr::arrange(desc(res1$log2FoldChange))
+genelist <- rownames(res1)
+metric <- res1$log2FoldChange
+names(metric) <- genelist
+
+results_with_gene_column <- rownames_to_column(res1, var = "Gene_name")
+
+
+print(results_with_gene_column)
+
+namedlist = signif(metric,digits = 10)
+
+```
+
+# Gene Set Enrichment Analysis Code
+```{r}
+GSEA_function <- function(dataset_path = NULL, namedlist = NULL, padj_filter = NULL, title = "") {
+  set.seed(123)
+
+  dataset <- gmtPathways(dataset_path)
+  result <- fgsea::fgsea(pathways = dataset, stats = namedlist)
+  
+  significant_results <- subset(result, padj < padj_filter) %>%
+    arrange(desc(NES)) %>%
+    mutate(leadingEdge = sapply(leadingEdge, function(x) paste(x, collapse = ", ")))
+  
+  
+  significant_results_ascending <- subset(result, padj < padj_filter) %>%
+    arrange(NES) %>%
+    mutate(leadingEdge = sapply(leadingEdge, function(x) paste(x, collapse = ", ")))
+  
+  # 3. Get the top 10 gene sets with the highest NES
+  top_10_highest_NES <- head(significant_results, 10)
+
+  # 4. Get the top 10 gene sets with the lowest NES
+  top_10_lowest_NES <- head(significant_results_ascending, 10)
+  
+  # 1. Define the custom label replacement function
+  replace_label <- function(x) {
+    replacements <- c("^HALLMARK_" = "", "^REACTOME_" = "", "^BIOCARTA_" = "",
+                      "^WP_" = "", "_TARGET_GENES$" = "", "^GOCC_" = "",
+                      "^GOMF_" = "", "^MP_" = "", "^TABULA_MURIS_SENIS_" = "")
+    for (prefix in names(replacements)) {
+      x <- gsub(prefix, replacements[prefix], x)
+    }
+    return(x)
+  }
+  
+  # 2. Replace pathway labels based on the custom_label or predefined replacements
+  plot <- ggplot(result, aes(reorder(replace_label(pathway), NES), NES)) +
+    geom_col(aes(fill = padj < padj_filter)) +
+    coord_flip() +
+    labs(x = "Pathway", y = "Normalized Enrichment Score",
+         title = title, fill = paste("padj <", padj_filter)) +
+    scale_fill_manual(values = c("TRUE" = "#00BFC4", "FALSE" = "#F8766D")) +
+    theme_minimal()
+  
+  filteredplot <- ggplot(significant_results, aes(reorder(replace_label(pathway), NES), NES)) +
+    geom_col(aes(fill = padj < padj_filter)) +
+    coord_flip() +
+    labs(x = "Pathway", y = "Normalized Enrichment Score",
+         title = title, fill = paste("padj <", padj_filter)) +
+    theme_minimal()
+  
+  
+  return(list(significant_results = significant_results,     top_10_highest_NES = top_10_highest_NES,
+    top_10_lowest_NES = top_10_lowest_NES, plot = plot, filteredplot = filteredplot))
+}
+```
+
+## path which contains all the GSEA datasets
+```{r}
+path <- "/projectnb/setagrp/pooja/data/msigdb/"
+```
+
+# All the subsequent Datasets being used  
+Information regarding the datasets used can be found here:
+https://www.gsea-msigdb.org/gsea/msigdb/mouse/collections.jsp
+```{r}
+# M2_curated_gene_sets <- "m2.all.v2023.1.Mm.symbols.gmt" not used
+#chromosomal_postional <- "m1.all.v2023.1.Mm.symbols.gmt"
+# chemical_genetic_pertubation <- "m2.cgp.v2023.1.Mm.symbols.gmt" not used
+# M3_regulatory_target_gene_sets <- "m3.all.v2023.1.Mm.symbols.gmt"
+# miRDB_gene_sets <- "m3.mirdb.v2023.1.Mm.symbols.gmt" 
+# GeneOntology <- "m5.go.v2023.1.Mm.symbols.gmt"
+# M5_ontology_gene_sets <- "m5.all.v2023.1.Mm.symbols.gmt"
+# BP_subset_of_GO <- "m5.go.bp.v2023.1.Mm.symbols.gmt"
+# MPT_tumor_phenotype_ontology <- "m5.mpt.v2023.1.Mm.symbols.gmt"
+#CC_subset_of_GO <- "m5.go.cc.v2023.1.Mm.symbols.gmt"
+#MF_subset_of_GO <- "m5.go.mf.v2023.1.Mm.symbols.gmt"
+#cell_type_signature<-"m8.all.v2023.1.Mm.symbols.gmt"
+# all_gene_sets <- "msigdb.v2023.1.Mm.symbols.gmt"
+
+hallmark <- "mh.all.v2023.1.Mm.symbols.gmt" 
+canonical_pathway <- "m2.cp.v2023.1.Mm.symbols.gmt" # select this
+BioCarta <- "m2.cp.biocarta.v2023.1.Mm.symbols.gmt" # select this
+Reactome <- "m2.cp.reactome.v2023.1.Mm.symbols.gmt" 
+WikiPathways <- "m2.cp.wikipathways.v2023.1.Mm.symbols.gmt"
+GTRD_gene_sets <- "m3.gtrd.v2023.1.Mm.symbols.gmt"
+
+```
+
+# H: hallmark gene sets  
+```{r}
+hallmark_results <- GSEA_function(dataset_path = file.path(path,hallmark),namedlist = signif(metric,digits = 10),padj_filter = 0.05,title = "Hallmark")
+
+
+hallmark_results$filteredplot
+
+datatable(hallmark_results$significant_results, extensions = 'Buttons', options = list(pageLength = 10, autoWidth = TRUE,dom = 'Bfrtip', scrollX = TRUE,buttons = c('copy', 'csv', 'excel', 'pdf', 'print')))
+
+hallmark_results$plot
+hallmark_results$top_10_highest_NES
+hallmark_results$top_10_lowest_NES
+
+datatable(hallmark_results$top_10_highest_NES, extensions = 'Buttons', options = list(pageLength = 10, autoWidth = TRUE,dom = 'Bfrtip', scrollX = TRUE,buttons = c('copy', 'csv', 'excel', 'pdf', 'print')))
+
+datatable(hallmark_results$top_10_lowest_NES, extensions = 'Buttons', options = list(pageLength = 10, autoWidth = TRUE,dom = 'Bfrtip', scrollX = TRUE,buttons = c('copy', 'csv', 'excel', 'pdf', 'print')))
+```
+
+#canonical_pathway
+```{r}
+canonical_pathway_results <- GSEA_function(dataset_path = file.path(path,canonical_pathway),namedlist = signif(metric,digits = 10),padj_filter = 0.05,title = "canonical_pathway")
+
+canonical_pathway_results$filteredplot
+datatable(canonical_pathway_results$significant_results, extensions = 'Buttons', options = list(pageLength = 10, autoWidth = TRUE, dom = 'Bfrtip', scrollX = TRUE,buttons = c('copy', 'csv', 'excel', 'pdf', 'print')))
+datatable(canonical_pathway_results$top_10_highest_NES, extensions = 'Buttons', options = list(pageLength = 10, autoWidth = TRUE, dom = 'Bfrtip', scrollX = TRUE,buttons = c('copy', 'csv', 'excel', 'pdf', 'print')))
+datatable(canonical_pathway_results$top_10_lowest_NES, extensions = 'Buttons', options = list(pageLength = 10, autoWidth = TRUE, dom = 'Bfrtip', scrollX = TRUE,buttons = c('copy', 'csv', 'excel', 'pdf', 'print')))
+
+
+canonical_pathway_results$plot
+
+canonical_pathway_results$top_10_highest_NES
+canonical_pathway_results$top_10_lowest_NES
+```
+```{r}
+canonical_pathway_results$significant_results %>% dplyr::arrange(NES) 
+```
+
+
+## CP: Canonical pathways
+### BioCarta subset of CP
+```{r}
+BioCarta_results <- GSEA_function(dataset_path = file.path(path,BioCarta),namedlist = signif(metric,digits = 10),padj_filter = 0.05,title = "BioCarta")
+
+BioCarta_results$filteredplot
+datatable(BioCarta_results$significant_results, extensions = 'Buttons', options = list(pageLength = 10, autoWidth = TRUE, dom = 'Bfrtip', scrollX = TRUE,buttons = c('copy', 'csv', 'excel', 'pdf', 'print')))
+datatable(BioCarta_results$top_10_highest_NES, extensions = 'Buttons', options = list(pageLength = 10, autoWidth = TRUE, dom = 'Bfrtip', scrollX = TRUE,buttons = c('copy', 'csv', 'excel', 'pdf', 'print')))
+datatable(BioCarta_results$top_10_lowest_NES, extensions = 'Buttons', options = list(pageLength = 10, autoWidth = TRUE, dom = 'Bfrtip', scrollX = TRUE,buttons = c('copy', 'csv', 'excel', 'pdf', 'print')))
+
+
+BioCarta_results$plot
+
+BioCarta_results$top_10_highest_NES
+BioCarta_results$top_10_lowest_NES
+```
+
+```{r}
+Reactome_results <- GSEA_function(dataset_path = file.path(path,Reactome),namedlist = signif(metric,digits = 10),padj_filter = 0.05,title = "Reactome")
+
+Reactome_results$filteredplot
+datatable(Reactome_results$significant_results, extensions = 'Buttons', options = list(pageLength = 10, autoWidth = TRUE, dom = 'Bfrtip', scrollX = TRUE,buttons = c('copy', 'csv', 'excel', 'pdf', 'print')))
+
+datatable(Reactome_results$top_10_highest_NES, extensions = 'Buttons', options = list(pageLength = 10, autoWidth = TRUE, dom = 'Bfrtip', scrollX = TRUE,buttons = c('copy', 'csv', 'excel', 'pdf', 'print')))
+
+datatable(Reactome_results$top_10_lowest_NES, extensions = 'Buttons', options = list(pageLength = 10, autoWidth = TRUE, dom = 'Bfrtip', scrollX = TRUE,buttons = c('copy', 'csv', 'excel', 'pdf', 'print')))
+
+
+
+Reactome_results$plot
+
+Reactome_results$top_10_highest_NES
+Reactome_results$top_10_lowest_NES
+```
+
+```{r}
+WikiPathways_results <- GSEA_function(dataset_path = file.path(path,WikiPathways),namedlist = signif(metric,digits = 10),padj_filter = 0.05,title = "WikiPathways")
+
+WikiPathways_results$filteredplot
+datatable(WikiPathways_results$significant_results, extensions = 'Buttons', options = list(pageLength = 10, autoWidth = TRUE, dom = 'Bfrtip', scrollX = TRUE,buttons = c('copy', 'csv', 'excel', 'pdf', 'print')))
+WikiPathways_results$plot
+
+WikiPathways_results$top_10_highest_NES
+WikiPathways_results$top_10_lowest_NES
+```
+
+
+```{r}
+label_res <- function(deseq2_res, padj_threshold) {
+  labeled_results <- deseq2_res %>% as.data.frame() %>%
+    rownames_to_column("Gene_name") %>%
+    as_tibble()
+  labeled_results$volc_plot_status <- NA
+  labeled_results <- labeled_results %>%
+    dplyr::relocate(Gene_name, volc_plot_status, log2FoldChange, padj)
+  labeled_results$volc_plot_status <- apply(labeled_results, 1, function(x){
+    if((is.na(x[4]) == FALSE) && (as.numeric(x[4]) < as.numeric(padj_threshold))){
+      if(as.numeric(x[3]) > 0){
+        x[2] = "UP"
+      } else {
+        x[2] = "DOWN"
+      }
+    } else {
+      x[2] = "NS"
+    }
+  }
+  )
+  return(labeled_results)
+}
+
+labeled_results <- label_res(res1, .05) 
+labeled_results <- arrange(labeled_results, padj) 
+labeled_results
+labeled_results['Gene_name']
+datatable(arrange(labeled_results, padj), extensions = 'Buttons', options = list(pageLength = 10, autoWidth = TRUE, dom = 'Bfrtip', scrollX = TRUE,buttons = c('copy', 'csv', 'excel', 'pdf', 'print')))
+
+# Subset genes with volc_plot_status "UP"
+genes_up <- subset(labeled_results, volc_plot_status == "UP") 
+genes_up['Gene_name']
+# Subset genes with volc_plot_status "DOWN"
+genes_down <- subset(labeled_results, volc_plot_status == "DOWN") 
+genes_down['Gene_name']
+# Subset genes with volc_plot_status "NS"
+genes_ns <- subset(labeled_results, volc_plot_status == "NS") 
+
+
+
+write_csv(labeled_results['Gene_name'],"HOMER_ALL_1.csv")
+write_csv(genes_up['Gene_name'],"HOMER_UP_1.csv")
+write_csv(genes_down['Gene_name'],"HOMER_DOWN_1.csv")
+
+```
+
+```{r, volcano plot, echo=FALSE, warning=FALSE}
+
+plot_volcano <- function(labeled_results, label_threshold = 1.3, label_n = 5) {
+  
+  # Filter points to be labeled based on log2FoldChange and -log10(padj) thresholds
+  labeled_points <- labeled_results %>%
+    filter(abs(log2FoldChange) > label_threshold & -log10(padj) > label_threshold)
+  
+  # Determine the direction (UP/DOWN) based on log2FoldChange and limit the number of genes to label
+  up_labeled_points <- labeled_points %>%
+    filter(log2FoldChange > 0) %>%
+    top_n(min(label_n, n()), abs(log2FoldChange) * -log10(padj))
+
+  down_labeled_points <- labeled_points %>%
+    filter(log2FoldChange < 0) %>%
+    top_n(min(label_n, n()), abs(log2FoldChange) * -log10(padj))
+
+  # Combine the labeled points for UP and DOWN directions
+  labeled_points <- rbind(up_labeled_points, down_labeled_points)
+
+  ggplot(labeled_results, aes(log2FoldChange, -log10(padj))) +
+    geom_point(aes(color = volc_plot_status)) +
+    geom_text(data = labeled_points, aes(label = Gene_name), nudge_x = .2, nudge_y = 4, size = 3) +
+    xlab(expression("log2FoldChange")) + 
+    ylab(expression("-log10(padj)")) +
+    ggtitle("Volcano plot of DESeq2 differential expression results") +
+    geom_hline(yintercept=0, linetype= 'dashed', color ='black')
+}
+
+# Example usage:
+volcano_plot <- plot_volcano(labeled_results, label_threshold = 2.0, label_n = 5)
+volcano_plot
+
+#fix VARS
+
+```
+

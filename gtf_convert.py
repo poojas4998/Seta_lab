@@ -34,7 +34,3 @@ parsed_data = parse_gtf_file("gencode.vM32.primary_assembly.annotation.gtf")
 
 print(parsed_data)
 write_to_csv(parsed_data, 'gene_data.csv')
-
-for record in parsed_data:
-    print('Gene ID:', record['gene_id'])
-    print('Gene Name:', record['gene_name'])
